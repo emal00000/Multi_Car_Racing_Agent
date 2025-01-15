@@ -7,6 +7,7 @@ import itertools
 import random
 from collections import namedtuple, deque
 
+
 Transition = namedtuple(
     "Transition", ("state", "action", "reward", "next_state", "terminated")
 )
@@ -20,22 +21,20 @@ class state_encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = nn.Sequential(
-                nn.Conv2d(1, 8, kernel_size=2, stride=1, padding=1),
+                nn.Conv2d(4, 8, kernel_size=2, stride=1, padding=1),
                 nn.ReLU(),
-                nn.Conv2d(8, 16, kernel_size=2, stride=1, padding=0),
+                nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=0),
                 nn.ReLU(),
-                nn.Conv2d(16, 8, kernel_size=2, stride=1, padding=1),
+                nn.Conv2d(8, 4, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Flatten(),
                 )    
 
 
     def forward(self, state):
-        
-        state = state.unsqueeze(1)
-        print(state.shape)
+        if len(state.shape) == 3:
+            state = state.unsqueeze(0)
         x = self.encoder(state) # encoding track info
-        print(x.shape)
         return x
 
 
@@ -72,7 +71,7 @@ class Qfunction(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.dense_net = nn.Sequential(  
-                nn.Linear(32, 32),
+                nn.Linear(62, 32),
                 nn.ReLU(),
                 nn.Linear(32, 32),
                 nn.ReLU(),
@@ -91,7 +90,7 @@ class GaussianPolicy(nn.Module):
     def __init__(self, encoder):
         super().__init__()
         self.encoder = encoder
-        self.fc = nn.Linear(32, 32)
+        self.fc = nn.Linear(60, 32)
         self.mu = nn.Sequential(
             nn.ReLU(),
             nn.Linear(32, 2)
@@ -132,15 +131,16 @@ class ConAgent(nn.Module):
         self.alpha = 1.0
 
         self.memory = ReplayMemory(capacity=100_000, batch_size=64)
-        self.encoder = state_encoder()
+        self.encoder = state_encoder() # Shared encoder
         self.pi = GaussianPolicy(self.encoder)
         self.qs = [Qfunction(self.encoder), Qfunction(self.encoder)]
         self.tqs = [Qfunction(self.encoder), Qfunction(self.encoder)]
 
 
-        self.optimizer_pi = torch.optim.Adam(itertools.chain(self.encoder.parameters(), self.pi.parameters()), lr=1e-3)
-        self.q_optimizers = [torch.optim.Adam(itertools.chain(self.encoder.parameters(),self.qs[0].parameters()), lr=1e-3),
-                       torch.optim.Adam(itertools.chain(self.encoder.parameters(),self.qs[1].parameters()), lr=1e-3)]
+        self.optimizer_encoder = torch.optim.Adam(self.encoder.parameters(), lr=1e-3)
+        self.optimizer_pi = torch.optim.Adam(itertools.chain(self.pi.fc.parameters(),self.pi.mu.parameters(),self.pi.parameters()), lr=1e-3)
+        self.q_optimizers = [torch.optim.Adam(self.qs[0].dense_net.parameters(), lr=1e-3),
+                       torch.optim.Adam(self.qs[1].dense_net.parameters(), lr=1e-3)]
         self.clone()
 
 
@@ -205,6 +205,9 @@ class ConAgent(nn.Module):
         self.qs[0].requires_grad_(True)
         self.qs[1].requires_grad_(True)
 
+        # Update encoder
+        self.optimizer_encoder.step()
+        self.optimizer_encoder.zero_grad()
 
     def store(self, state, action, reward, next_state, terminated):
         # Store transition

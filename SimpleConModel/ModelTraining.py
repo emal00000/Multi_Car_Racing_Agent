@@ -10,8 +10,8 @@ env = gym.make("MultiCarRacing-v0", verbose=0, num_agents=1, direction='CCW',
                 )
 start = time.time()
 SAC_exp = traning_loop(env, 
-                        num_episodes=4000,
-                        num_experiments=3,
+                        num_episodes=20,
+                        num_experiments=1,
                         min_alpha=0.1,
                         tau=0.1**(1/100),
                         render_mode=None,
