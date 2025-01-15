@@ -13,25 +13,24 @@ env = gym.make("MultiCarRacing-v0", num_agents=1, direction='CCW',
 start = time.time()
 print("Current directory: ", os.getcwd())
 
-path = "Checkpoints/Car_lstm_exp_0_0.pt"
+path = "Car_ep:20_exp:0.pt"
 # path = "Trained_models/Car_LSTM_ep:1000_exp:0.txt"
 
 agent = ConAgent()
 agent.load(path)
-state = env.reset()[0]
+state = env.reset()
 
 score = 0
 step = 0
 while True:
     action = agent.sample_action(state)
     next_state, reward, _, _ = env.step(gas_brake_map(action))
-    terminated = env.termineted
-    next_state = next_state[0]
+    terminated = env.terminated
     score += reward
     step += 1
     state = next_state
     env.render("human")
-    if env.termineted:
+    if env.terminated:
         break
 
 print("Score: ", score)

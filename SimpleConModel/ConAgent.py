@@ -3,9 +3,12 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import os
-
+import itertools
 import random
 from collections import namedtuple, deque
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device: ", device)
 
 Transition = namedtuple(
     "Transition", ("state", "action", "reward", "next_state", "terminated")
@@ -20,11 +23,11 @@ class state_encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = nn.Sequential(
-                nn.Conv2d(1, 8, kernel_size=2, stride=1, padding=1),
+                nn.Conv2d(4, 8, kernel_size=2, stride=1, padding=1),
                 nn.ReLU(),
-                nn.Conv2d(8, 16, kernel_size=2, stride=1, padding=0),
+                nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=0),
                 nn.ReLU(),
-                nn.Conv2d(16, 8, kernel_size=2, stride=1, padding=1),
+                nn.Conv2d(8, 4, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Flatten(),
                 )    
@@ -32,13 +35,9 @@ class state_encoder(nn.Module):
 
     def forward(self, state):
         if len(state.shape) == 3:
-            state = state.unsqueeze(1)
-        elif len(state.shape) == 2:
-            state = state.unsqueeze(0).unsqueeze(1)
-
-        x = self.encoder(state[:,:, :-1, :]).squeeze(0) # encoding track info
-        car_info = state[:, :, -1, :].squeeze((0,1))
-        return torch.cat((x, car_info), dim=-1)
+            state = state.unsqueeze(0)
+        x = self.encoder(state) # encoding track info
+        return x
 
 
 
@@ -54,11 +53,11 @@ class ReplayMemory:
     def sample(self) -> Batch:
         sample = random.choices(self.data, k=self.batch_size)
         states, actions, rewards, next_states, terminateds = list(zip(*sample))
-        states = torch.tensor(np.array(states), dtype=torch.float32)
-        actions = torch.tensor(np.array(actions), dtype=torch.float32)
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32)
-        next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
-        terminateds = torch.tensor(np.array(terminateds), dtype=torch.float32)
+        states = torch.tensor(np.array(states), dtype=torch.float32,device=device)
+        actions = torch.tensor(np.array(actions), dtype=torch.float32,device=device)
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32,device=device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32,device=device)
+        terminateds = torch.tensor(np.array(terminateds), dtype=torch.float32,device=device)
         return Batch(states, actions, rewards, next_states, terminateds)
 
     def __len__(self):
@@ -70,17 +69,19 @@ class Qfunction(nn.Module):
     SAC uses Q(s,a) instead of DQN's Q(s, :)
     """
 
-    def __init__(self):
+    def __init__(self, encoder):
         super().__init__()
+        self.encoder = encoder
         self.dense_net = nn.Sequential(  
-                nn.Linear(32, 32),
+                nn.Linear(62, 32),
                 nn.ReLU(),
                 nn.Linear(32, 32),
                 nn.ReLU(),
                 nn.Linear(32, 1),
         )
 
-    def forward(self, encoding, actions):
+    def forward(self, states, actions):
+        encoding = self.encoder(states)
         x = torch.cat((encoding, actions.view(actions.shape[0], -1)), dim=1)
         x = self.dense_net(x)
         return x
@@ -88,9 +89,10 @@ class Qfunction(nn.Module):
 
 
 class GaussianPolicy(nn.Module):
-    def __init__(self):
+    def __init__(self, encoder):
         super().__init__()
-        self.fc = nn.Linear(32, 32)
+        self.encoder = encoder
+        self.fc = nn.Linear(60, 32)
         self.mu = nn.Sequential(
             nn.ReLU(),
             nn.Linear(32, 2)
@@ -100,9 +102,10 @@ class GaussianPolicy(nn.Module):
             nn.Linear(32, 2)
         )
 
-    def forward(self, encoding):
+    def forward(self, states):
         # Reparameterized and squashed sampling 
         # Returns actions and log probabilities
+        encoding = self.encoder(states)
         encoding = self.fc(encoding)
         gaussian = torch.distributions.Normal(self.mu(encoding), torch.abs(self.std(encoding)))
         u = gaussian.rsample()
@@ -125,19 +128,32 @@ class ConAgent(nn.Module):
     """
     def __init__(self, **kwargs):
         super().__init__()
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.lambda_ = 0.005
         self.gamma = 0.99
         self.alpha = 1.0
 
         self.memory = ReplayMemory(capacity=100_000, batch_size=64)
-        self.pi = GaussianPolicy()
-        self.encoder = state_encoder()
-        self.qs = [Qfunction(), Qfunction()]
-        self.tqs = [Qfunction(), Qfunction()]
+        self.encoder = state_encoder() # Shared encoder
 
-        self.optimizer_pi = torch.optim.Adam([self.state_encoder.parameters(), self.pi.parameters()], lr=1e-3)
-        self.q_optimizers = [torch.optim.Adam([self.state_encoder.parameters(),self.qs[0].parameters()], lr=1e-3),
-                       torch.optim.Adam(self.qs[1].parameters(), lr=1e-3)]
+        self.pi = GaussianPolicy(self.encoder)
+        self.qs = [Qfunction(self.encoder), Qfunction(self.encoder)]
+        self.tqs = [Qfunction(self.encoder), Qfunction(self.encoder)]
+        
+        self.encoder.to(self.device)
+        self.pi.to(self.device)
+        self.qs[0].to(self.device)
+        self.qs[1].to(self.device)
+        self.tqs[0].to(self.device)
+        self.tqs[1].to(self.device)
+
+
+
+        self.optimizer_encoder = torch.optim.Adam(self.encoder.parameters(), lr=1e-3)
+        self.optimizer_pi = torch.optim.Adam(itertools.chain(self.pi.fc.parameters(),self.pi.mu.parameters(),self.pi.parameters()), lr=1e-3)
+        self.q_optimizers = [torch.optim.Adam(self.qs[0].dense_net.parameters(), lr=1e-3),
+                       torch.optim.Adam(self.qs[1].dense_net.parameters(), lr=1e-3)]
         self.clone()
 
 
@@ -160,8 +176,11 @@ class ConAgent(nn.Module):
     @torch.no_grad
     def sample_action(self, state):
         # Sample single action from the policy
-        action, _ = self.pi(state)
-        action[1:3] = 0.5 * action[1:3] + 0.5 # normalazing gas and braking to [0, 1] 
+        state = state.to(self.device)
+        action, _ = self.pi(state) 
+
+        action=action.to("cpu") # Return action to CPU
+
         return action
 
     def update(self, batch: Batch):
@@ -202,6 +221,9 @@ class ConAgent(nn.Module):
         self.qs[0].requires_grad_(True)
         self.qs[1].requires_grad_(True)
 
+        # Update encoder
+        self.optimizer_encoder.step()
+        self.optimizer_encoder.zero_grad()
 
     def store(self, state, action, reward, next_state, terminated):
         # Store transition

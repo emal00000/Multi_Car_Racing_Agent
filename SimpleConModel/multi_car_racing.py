@@ -15,6 +15,7 @@ import pyglet
 from pyglet import gl
 from shapely.geometry import Point, Polygon
 
+from collections import deque
 
 # Easiest continuous control task to learn from pixels, a top-down racing environment.
 # Discrete control is reasonable in this environment as well, on/off discretization is
@@ -176,7 +177,12 @@ class MultiCarRacing(gym.Env, EzPickle):
         self.track_array = None
         self.track_poly_array = None
         self.car_info = pd.DataFrame(columns=list("1234567")) # for abstaction
+        
+        #fill deques with zeros
+        zero = np.zeros((17, 3)).dtype(np.float32)
+        self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
+        
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -379,6 +385,9 @@ class MultiCarRacing(gym.Env, EzPickle):
         self.tile_visited_count = [0]*self.num_agents
         self.t = 0.0
         self.road_poly = []
+        
+        zero = torch.zeros((17, 3)).dtype(torch.float32)
+        self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
         # Reset driving backwards/on-grass states and track direction
         self.driving_backward = np.zeros(self.num_agents, dtype=bool)
@@ -619,17 +628,13 @@ class MultiCarRacing(gym.Env, EzPickle):
                 angel_to_track = np.arctan2(y, x) + np.pi
 
 
-                car_state[-2,:] = np.array([car_info['angle_diff'][car_id], 
+                car_state[-1,:] = np.array([car_info['angle_diff'][car_id], 
                                             car_info['distance_to_tiles'][car_id], 
                                             angel_to_track])
                 
-                if len(track_in_window) == 0:
-                    track_len = 1
-                else:
-                    track_len = track_in_window.shape[0]
-                car_state[-1,:] = np.array([track_len,0,0])
                 
                 ab_states[car_id, :, :] = torch.tensor(car_state)
+
 
                 # Convert to dataframe
                 # track_data = pd.DataFrame(data=track_in_window[0:,0:],
@@ -642,7 +647,13 @@ class MultiCarRacing(gym.Env, EzPickle):
         
         if done:
             self.termineted = True
-        return ab_states, step_reward, done, {}
+
+       
+        self.state_buffers.append(ab_states)
+        stacked_states = torch.tensor(self.state_buffers).dtype(torch.float32)
+
+
+        return stacked_states, step_reward, done, {}
 
     def render(self, mode='human'):
         assert mode in ['human', 'state_pixels', 'rgb_array']
