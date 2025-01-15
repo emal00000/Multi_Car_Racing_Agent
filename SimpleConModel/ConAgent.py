@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import os
-
+import itertools
 import random
 from collections import namedtuple, deque
 
@@ -31,14 +31,12 @@ class state_encoder(nn.Module):
 
 
     def forward(self, state):
-        if len(state.shape) == 3:
-            state = state.unsqueeze(1)
-        elif len(state.shape) == 2:
-            state = state.unsqueeze(0).unsqueeze(1)
-
-        x = self.encoder(state[:,:, :-1, :]).squeeze(0) # encoding track info
-        car_info = state[:, :, -1, :].squeeze((0,1))
-        return torch.cat((x, car_info), dim=-1)
+        
+        state = state.unsqueeze(1)
+        print(state.shape)
+        x = self.encoder(state) # encoding track info
+        print(x.shape)
+        return x
 
 
 
@@ -70,8 +68,9 @@ class Qfunction(nn.Module):
     SAC uses Q(s,a) instead of DQN's Q(s, :)
     """
 
-    def __init__(self):
+    def __init__(self, encoder):
         super().__init__()
+        self.encoder = encoder
         self.dense_net = nn.Sequential(  
                 nn.Linear(32, 32),
                 nn.ReLU(),
@@ -80,7 +79,8 @@ class Qfunction(nn.Module):
                 nn.Linear(32, 1),
         )
 
-    def forward(self, encoding, actions):
+    def forward(self, states, actions):
+        encoding = self.encoder(states)
         x = torch.cat((encoding, actions.view(actions.shape[0], -1)), dim=1)
         x = self.dense_net(x)
         return x
@@ -88,8 +88,9 @@ class Qfunction(nn.Module):
 
 
 class GaussianPolicy(nn.Module):
-    def __init__(self):
+    def __init__(self, encoder):
         super().__init__()
+        self.encoder = encoder
         self.fc = nn.Linear(32, 32)
         self.mu = nn.Sequential(
             nn.ReLU(),
@@ -100,9 +101,10 @@ class GaussianPolicy(nn.Module):
             nn.Linear(32, 2)
         )
 
-    def forward(self, encoding):
+    def forward(self, states):
         # Reparameterized and squashed sampling 
         # Returns actions and log probabilities
+        encoding = self.encoder(states)
         encoding = self.fc(encoding)
         gaussian = torch.distributions.Normal(self.mu(encoding), torch.abs(self.std(encoding)))
         u = gaussian.rsample()
@@ -130,14 +132,15 @@ class ConAgent(nn.Module):
         self.alpha = 1.0
 
         self.memory = ReplayMemory(capacity=100_000, batch_size=64)
-        self.pi = GaussianPolicy()
         self.encoder = state_encoder()
-        self.qs = [Qfunction(), Qfunction()]
-        self.tqs = [Qfunction(), Qfunction()]
+        self.pi = GaussianPolicy(self.encoder)
+        self.qs = [Qfunction(self.encoder), Qfunction(self.encoder)]
+        self.tqs = [Qfunction(self.encoder), Qfunction(self.encoder)]
 
-        self.optimizer_pi = torch.optim.Adam([self.state_encoder.parameters(), self.pi.parameters()], lr=1e-3)
-        self.q_optimizers = [torch.optim.Adam([self.state_encoder.parameters(),self.qs[0].parameters()], lr=1e-3),
-                       torch.optim.Adam(self.qs[1].parameters(), lr=1e-3)]
+
+        self.optimizer_pi = torch.optim.Adam(itertools.chain(self.encoder.parameters(), self.pi.parameters()), lr=1e-3)
+        self.q_optimizers = [torch.optim.Adam(itertools.chain(self.encoder.parameters(),self.qs[0].parameters()), lr=1e-3),
+                       torch.optim.Adam(itertools.chain(self.encoder.parameters(),self.qs[1].parameters()), lr=1e-3)]
         self.clone()
 
 

@@ -1,7 +1,7 @@
 from ConAgent import traning_loop
 import gym
 import os
-import gym_multi_car_racing
+import gym_multi_car_racing.multi_car_racing
 import time
 
 env = gym.make("MultiCarRacing-v0", verbose=0, num_agents=1, direction='CCW',
