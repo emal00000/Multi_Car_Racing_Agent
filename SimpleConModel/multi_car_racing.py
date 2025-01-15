@@ -172,6 +172,7 @@ class MultiCarRacing(gym.Env, EzPickle):
 
 
         # Intit for abstraction
+        self.termineted = False
         self.track_array = None
         self.track_poly_array = None
         self.car_info = pd.DataFrame(columns=list("1234567")) # for abstaction
@@ -372,6 +373,7 @@ class MultiCarRacing(gym.Env, EzPickle):
 
     def reset(self):
         self._destroy()
+        self.termineted = False
         self.reward = np.zeros(self.num_agents)
         self.prev_reward = np.zeros(self.num_agents)
         self.tile_visited_count = [0]*self.num_agents
@@ -465,7 +467,8 @@ class MultiCarRacing(gym.Env, EzPickle):
 
         step_reward = np.zeros(self.num_agents)
         done = False
-        ab_states = torch.zeros((len(self.cars), 16, 3))
+        ab_states = torch.zeros((len(self.cars), 17, 3))
+        ab_states[:len(self.cars), -1, 0] = 1
         if action is not None: # First step without action, called from reset()
             self.reward -= 0.1
             # We actually don't want to count fuel spent, we want car to be faster.
@@ -475,8 +478,8 @@ class MultiCarRacing(gym.Env, EzPickle):
             # self.cars[0].fuel_spent = 0.0
 
             step_reward = self.reward - self.prev_reward
+            self.car_info.columns = ['car_angle', 'distance_to_tiles', 'closest_tile', 'desired_angle', 'angle_diff', 'car_pos_x', 'car_pos_y']
             # Add penalty for driving backward
-            self.car_info.columns = ['car_angle', 'distance_to_tiles', 'on_grass', 'desired_angle', 'angle_diff', 'car_pos_x', 'car_pos_y']
             for car_id, car in enumerate(self.cars):  # Enumerate through cars
                 info = [None for _ in range(7)]
                 # Get car speed
@@ -506,11 +509,14 @@ class MultiCarRacing(gym.Env, EzPickle):
                 track_index = np.argmin(distance_to_tiles)
 
                 info[1] = distance_to_tiles[track_index]
+                info[2] = track_index
                 # Check if car is driving on grass by checking inside polygons
                 on_grass = not np.array([car_pos_as_point.within(polygon)
                                    for polygon in self.road_poly_shapely]).any()
                 self.driving_on_grass[car_id] = on_grass
-                info[2] = on_grass
+                if on_grass: # Reward for driving on grass
+                    done = True
+                    step_reward[car_id] += -100
                 # Find track angle of closest point
                 desired_angle = self.track[track_index][1]
 
@@ -548,7 +554,7 @@ class MultiCarRacing(gym.Env, EzPickle):
                 x, y = car.hull.position
                 if abs(x) > PLAYFIELD or abs(y) > PLAYFIELD:
                     done = True
-                    step_reward[car_id] = -100
+                    step_reward[car_id] += -100
 
             # Create absatraction state
             track = self.track_array
@@ -594,7 +600,7 @@ class MultiCarRacing(gym.Env, EzPickle):
                 track_in_window[:, 1:] = track_in_window[:, 1:] - np.array((car_x, car_y))
 
                 # Create state
-                len_of_array = 16
+                len_of_array = 17
                 car_state = np.zeros((len_of_array, 3), dtype=np.float32)
                 
                 if track_in_window.shape[0] > 15:
@@ -603,24 +609,39 @@ class MultiCarRacing(gym.Env, EzPickle):
                 car_state[:track_in_window.shape[0], :] = track_in_window
 
                 # Get more car info from the code in step
+                # Get angel to closest track point
                 car_info = self.car_info
+                track_index = car_info['closest_tile'][car_id]
+                car_pos = car.hull.position
+                track_pos = self.track[int(track_index)][2:]
 
-                car_state[-1,:] = np.array([car_info['angle_diff'][car_id], 
+                x, y =  np.array(track_pos) - np.array(car_pos)
+                angel_to_track = np.arctan2(y, x) + np.pi
+
+
+                car_state[-2,:] = np.array([car_info['angle_diff'][car_id], 
                                             car_info['distance_to_tiles'][car_id], 
-                                            car_info['on_grass'][car_id]])
+                                            angel_to_track])
+                
+                if len(track_in_window) == 0:
+                    track_len = 1
+                else:
+                    track_len = track_in_window.shape[0]
+                car_state[-1,:] = np.array([track_len,0,0])
                 
                 ab_states[car_id, :, :] = torch.tensor(car_state)
 
                 # Convert to dataframe
-                track_data = pd.DataFrame(data=track_in_window[0:,0:],
-                            index=[i for i in range(track_in_window.shape[0])],
-                            columns=['beta1', 'track_x', 'track_y'])
-                path = 'Documents/DeepRL'
-                # # print(track_data.head(10))
-                track_data.to_csv(path_or_buf= path + "/track_data.csv", sep=',', index=False, header=True)
-                self.car_info.to_csv(path_or_buf= path + "/car_info.csv", sep=',', index=False, header=True)
-            if len(self.cars) == 1:
-                ab_states = ab_states[0, :, :]
+                # track_data = pd.DataFrame(data=track_in_window[0:,0:],
+                #             index=[i for i in range(track_in_window.shape[0])],
+                #             columns=['beta1', 'track_x', 'track_y'])
+                # path = 'Documents/DeepRL'
+                # track_data.to_csv(path_or_buf= path + "/track_data.csv", sep=',', index=False, header=True)
+                # self.car_info.to_csv(path_or_buf= path + "/car_info.csv", sep=',', index=False, header=True)
+            
+        
+        if done:
+            self.termineted = True
         return ab_states, step_reward, done, {}
 
     def render(self, mode='human'):
