@@ -7,6 +7,8 @@ import itertools
 import random
 from collections import namedtuple, deque
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device: ", device)
 
 Transition = namedtuple(
     "Transition", ("state", "action", "reward", "next_state", "terminated")
@@ -51,11 +53,11 @@ class ReplayMemory:
     def sample(self) -> Batch:
         sample = random.choices(self.data, k=self.batch_size)
         states, actions, rewards, next_states, terminateds = list(zip(*sample))
-        states = torch.tensor(np.array(states), dtype=torch.float32)
-        actions = torch.tensor(np.array(actions), dtype=torch.float32)
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32)
-        next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
-        terminateds = torch.tensor(np.array(terminateds), dtype=torch.float32)
+        states = torch.tensor(np.array(states), dtype=torch.float32,device=device)
+        actions = torch.tensor(np.array(actions), dtype=torch.float32,device=device)
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32,device=device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32,device=device)
+        terminateds = torch.tensor(np.array(terminateds), dtype=torch.float32,device=device)
         return Batch(states, actions, rewards, next_states, terminateds)
 
     def __len__(self):
@@ -126,15 +128,26 @@ class ConAgent(nn.Module):
     """
     def __init__(self, **kwargs):
         super().__init__()
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.lambda_ = 0.005
         self.gamma = 0.99
         self.alpha = 1.0
 
         self.memory = ReplayMemory(capacity=100_000, batch_size=64)
         self.encoder = state_encoder() # Shared encoder
+
         self.pi = GaussianPolicy(self.encoder)
         self.qs = [Qfunction(self.encoder), Qfunction(self.encoder)]
         self.tqs = [Qfunction(self.encoder), Qfunction(self.encoder)]
+        
+        self.encoder.to(self.device)
+        self.pi.to(self.device)
+        self.qs[0].to(self.device)
+        self.qs[1].to(self.device)
+        self.tqs[0].to(self.device)
+        self.tqs[1].to(self.device)
+
 
 
         self.optimizer_encoder = torch.optim.Adam(self.encoder.parameters(), lr=1e-3)
@@ -163,8 +176,11 @@ class ConAgent(nn.Module):
     @torch.no_grad
     def sample_action(self, state):
         # Sample single action from the policy
-        action, _ = self.pi(state)
-        action[1:3] = 0.5 * action[1:3] + 0.5 # normalazing gas and braking to [0, 1] 
+        state = state.to(self.device)
+        action, _ = self.pi(state) 
+
+        action=action.to("cpu") # Return action to CPU
+
         return action
 
     def update(self, batch: Batch):
