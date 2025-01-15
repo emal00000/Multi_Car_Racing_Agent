@@ -134,7 +134,7 @@ class ConAgent(nn.Module):
         self.gamma = 0.99
         self.alpha = 1.0
 
-        self.memory = ReplayMemory(capacity=100_000, batch_size=64)
+        self.memory = ReplayMemory(capacity=100_000, batch_size=128)
         self.encoder = state_encoder() # Shared encoder
 
         self.pi = GaussianPolicy(self.encoder)

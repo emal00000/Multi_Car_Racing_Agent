@@ -14,7 +14,7 @@ SAC_exp = traning_loop(env,
                         num_experiments=1,
                         min_alpha=0.1,
                         tau=0.1**(1/100),
-                        render_mode=None,
+                        render_mode="human",
                         max_steps = 2000,
                         load_pretrained=""
                         )

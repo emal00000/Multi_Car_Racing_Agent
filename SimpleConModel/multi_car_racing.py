@@ -173,13 +173,13 @@ class MultiCarRacing(gym.Env, EzPickle):
 
 
         # Intit for abstraction
-        self.termineted = False
+        self.terminated = False
         self.track_array = None
         self.track_poly_array = None
         self.car_info = pd.DataFrame(columns=list("1234567")) # for abstaction
         
         #fill deques with zeros
-        zero = np.zeros((17, 3)).dtype(np.float32)
+        zero = torch.zeros((17, 3),dtype=torch.float32)
         self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
         
@@ -379,14 +379,14 @@ class MultiCarRacing(gym.Env, EzPickle):
 
     def reset(self):
         self._destroy()
-        self.termineted = False
+        self.terminated = False
         self.reward = np.zeros(self.num_agents)
         self.prev_reward = np.zeros(self.num_agents)
         self.tile_visited_count = [0]*self.num_agents
         self.t = 0.0
         self.road_poly = []
         
-        zero = torch.zeros((17, 3)).dtype(torch.float32)
+        zero = torch.zeros((17, 3),dtype=(torch.float32))
         self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
         # Reset driving backwards/on-grass states and track direction
@@ -464,7 +464,7 @@ class MultiCarRacing(gym.Env, EzPickle):
             action = np.reshape(action, (self.num_agents, -1))
             for car_id, car in enumerate(self.cars):
                 car.steer(-action[car_id][0])
-                car.gas(action[car_id][1])
+                car.gas(min(action[car_id][1] * 1.5, 1.0))
                 car.brake(action[car_id][2])
 
         for car in self.cars:
@@ -612,8 +612,8 @@ class MultiCarRacing(gym.Env, EzPickle):
                 len_of_array = 17
                 car_state = np.zeros((len_of_array, 3), dtype=np.float32)
                 
-                if track_in_window.shape[0] > 15:
-                    track_in_window = track_in_window[:15]
+                if track_in_window.shape[0] > 16:
+                    track_in_window = track_in_window[:16]
 
                 car_state[:track_in_window.shape[0], :] = track_in_window
 
@@ -633,7 +633,7 @@ class MultiCarRacing(gym.Env, EzPickle):
                                             angel_to_track])
                 
                 
-                ab_states[car_id, :, :] = torch.tensor(car_state)
+                ab_states = torch.tensor(car_state)
 
 
                 # Convert to dataframe
@@ -646,11 +646,14 @@ class MultiCarRacing(gym.Env, EzPickle):
             
         
         if done:
-            self.termineted = True
+            self.terminated = True
 
-       
-        self.state_buffers.append(ab_states)
-        stacked_states = torch.tensor(self.state_buffers).dtype(torch.float32)
+        if len(ab_states.shape) == 3: # If state is 3D, remove first dimension
+            ab_states = ab_states.squeeze(0)
+
+        self.state_buffers.append(ab_states) # Add state to buffer
+
+        stacked_states = torch.tensor(np.array(self.state_buffers),dtype=torch.float32) # Stack states
 
 
         return stacked_states, step_reward, done, {}

@@ -1,5 +1,5 @@
 High score:
-Experiment: 0, Episode: 1, Score: -111.20, Steps: 430
+Experiment: 0, Episode: 4, Score: -29.43, Steps: 306
 
 Current run:
-Experiment: 0, Episode: 1, Score: -111.20, Steps: 430
+Experiment: 0, Episode: 13, Score: -91.81, Steps: 531
