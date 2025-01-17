@@ -13,10 +13,12 @@ env = gym.make("MultiCarRacing-v0", num_agents=1, direction='CCW',
 start = time.time()
 print("Current directory: ", os.getcwd())
 
-path = "Car_ep:20_exp:0.pt"
-# path = "Trained_models/Car_LSTM_ep:1000_exp:0.txt"
+path = "Car_exp:1_ep:20.pth"
+
 
 agent = ConAgent()
+
+print(f"Loading pretrained model: {path}")
 agent.load(path)
 state = env.reset()
 
@@ -33,6 +35,6 @@ while True:
     if env.terminated:
         break
 
-print("Score: ", score)
-print("Time: ", time.time() - start)
+print(f"\nScore: {score[0]:.2f}", )
+print(f"Time: {time.time() - start:.2f}")
 env.close()
