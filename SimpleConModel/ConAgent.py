@@ -3,10 +3,14 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import os
-import itertools
 import random
 from collections import namedtuple, deque
 
+torch.serialization.add_safe_globals({
+'replay_buffer': list,
+'replay_buffer_batch_size': int,
+'replay_buffer_capacity': int,
+})
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Device: ", device)
 
@@ -45,6 +49,7 @@ class ReplayMemory:
 
     def __init__(self, capacity: int, batch_size: int):
         self.batch_size = batch_size
+        self.capacity = capacity
         self.data = deque([], maxlen=capacity)
 
     def add(self, *args):
@@ -128,19 +133,20 @@ class ConAgent(nn.Module):
     """
     def __init__(self, **kwargs):
         super().__init__()
-
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.lambda_ = 0.005
         self.gamma = 0.99
         self.alpha = 1.0
 
         self.memory = ReplayMemory(capacity=100_000, batch_size=64)
+        
+        # Models
         self.encoder = state_encoder() # Shared encoder
-
         self.pi = GaussianPolicy(self.encoder)
         self.qs = [Qfunction(self.encoder), Qfunction(self.encoder)]
         self.tqs = [Qfunction(self.encoder), Qfunction(self.encoder)]
         
+        # Send to device
         self.encoder.to(self.device)
         self.pi.to(self.device)
         self.qs[0].to(self.device)
@@ -148,13 +154,15 @@ class ConAgent(nn.Module):
         self.tqs[0].to(self.device)
         self.tqs[1].to(self.device)
 
-
-
+        # Optimizers
         self.optimizer_encoder = torch.optim.Adam(self.encoder.parameters(), lr=1e-3)
-        self.optimizer_pi = torch.optim.Adam(itertools.chain(self.pi.fc.parameters(),self.pi.mu.parameters(),self.pi.parameters()), lr=1e-3)
-        self.q_optimizers = [torch.optim.Adam(self.qs[0].dense_net.parameters(), lr=1e-3),
-                       torch.optim.Adam(self.qs[1].dense_net.parameters(), lr=1e-3)]
+        self.optimizer_pi = torch.optim.Adam([{'params': self.pi.fc.parameters()},
+                                              {'params': self.pi.mu.parameters()},
+                                              {'params': self.pi.std.parameters()}], lr=1e-3)
+        self.q_optimizers = [torch.optim.Adam([{'params': self.qs[0].dense_net.parameters()}], lr=1e-3),
+                       torch.optim.Adam([{'params': self.qs[1].dense_net.parameters()}], lr=1e-3)]
         self.clone()
+
 
 
     @torch.no_grad
@@ -235,16 +243,57 @@ class ConAgent(nn.Module):
         self.update(batch)
 
     def save(self, filename: str):
-        torch.save(self.pi.state_dict(), filename)
+        if '.pth' not in filename:
+            raise ValueError("Filename must end with .pth")
+        
+        # Save all states in a single file
+        torch.save({
+            'encoder_state_dict': self.encoder.state_dict(),
+            'pi_state_dict': self.pi.state_dict(),
+            'qs_0_state_dict': self.qs[0].state_dict(),
+            'qs_1_state_dict': self.qs[1].state_dict(),
+            'tqs_0_state_dict': self.tqs[0].state_dict(),
+            'tqs_1_state_dict': self.tqs[1].state_dict(),
+            'encoder_opt_state_dict': self.optimizer_encoder.state_dict(),
+            'pi_opt_state_dict': self.optimizer_pi.state_dict(),
+            'qs_opt_0_state_dict': self.q_optimizers[0].state_dict(),
+            'qs_opt_1_state_dict': self.q_optimizers[1].state_dict(),
+            'replay_buffer': list(self.memory.data),
+            'replay_buffer_batch_size': self.memory.batch_size,
+            'replay_buffer_capacity': self.memory.capacity,
+        }, filename)
 
     def load(self, filename: str):
-        self.pi.load_state_dict(torch.load(filename, weights_only=True))
+        # Load all optimizers, models, and hyperparameters
+        checkpoint = torch.load(filename, weights_only=False)
+
+        # Load models
+        self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
+        self.pi.load_state_dict(checkpoint['pi_state_dict'])
+        self.qs[0].load_state_dict(checkpoint['qs_0_state_dict'])
+        self.qs[1].load_state_dict(checkpoint['qs_1_state_dict'])
+        self.tqs[0].load_state_dict(checkpoint['tqs_0_state_dict'])
+        self.tqs[1].load_state_dict(checkpoint['tqs_1_state_dict'])
+
+        # Load optimizers
+        self.optimizer_encoder.load_state_dict(checkpoint['encoder_opt_state_dict'])
+        self.optimizer_pi.load_state_dict(checkpoint['pi_opt_state_dict'])
+        self.q_optimizers[0].load_state_dict(checkpoint['qs_opt_0_state_dict'])
+        self.q_optimizers[1].load_state_dict(checkpoint['qs_opt_1_state_dict'])
+
+        # Load replay buffer
+        self.memory.data = deque(checkpoint['replay_buffer'], checkpoint['replay_buffer_capacity'])
+
 
 
 
 def gas_brake_map(action):
     # maping negative gas to brake
     action = action.squeeze(0)
+    bias = 0.65
+    if action[1] < 1 - bias:
+        action[1] += bias
+
     a = torch.cat([action, -action[1].unsqueeze(0)])
     if action[1] > 0:
         a[2] = 0
@@ -302,37 +351,40 @@ class traning_loop():
         dfs = []
         self.high_score = -1e3
         self.high_score_txt = ""
-        for exp in range(self.num_experiments):
-            self.agent = ConAgent()
-            if self.load_pretrained:
-                self.agent.load(self.load_pretrained)
-            ma10 = self.episode_loop(exp)
-            dfs.append(
-                pd.DataFrame(
-                    {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
-                )
-            )
-            self.agent.save(f"Car_ep:{self.num_episodes}_exp:{exp}.pt")
-
-        df = pd.concat(dfs, ignore_index=True)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        df.to_csv(path_or_buf=os.path.join(script_dir, f"ma10_result_exp{exp}.csv"), sep=',', index=False, header=True)
-        print()
+        try:
+            for exp in range(self.num_experiments):
+                self.agent = ConAgent()
+                try:
+                    if self.load_pretrained:
+                        self.agent.load(self.load_pretrained)
+                    ma10 = self.episode_loop(exp)
+                    dfs.append(
+                        pd.DataFrame(
+                            {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
+                        )
+                    )
+                finally:
+                    self.agent.save(f"Car_exp:{exp}_ep:{self.num_episodes}.pt")
+        finally:
+            df = pd.concat(dfs, ignore_index=True)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            df.to_csv(path_or_buf=os.path.join(script_dir, f"ma10_result_exp{exp}.csv"), sep=',', index=False, header=True)
+            print()
         return df
 
 
     def episode_loop(self, exp):
         scores = deque([], maxlen=10)
         ma10 = np.zeros(self.num_episodes)
-        for e in range(self.num_episodes):
+        for e in range(1, self.num_episodes + 1):
             score, step = self.step_loop()
             self.display(exp, e, score, step)
             self.agent.alpha = max(self.min_alpha, self.agent.alpha * self.tau)
             scores.append(score)
-            ma10[e] += np.mean(scores)
+            ma10[e-1] += np.mean(scores)
             if e % 50 == 0:
                 print("Checkpoint saved at episode: ", e, "\n")
-                self.agent.save(f"Checkpoints/Car_lstm_exp_{exp}_{e}.pt")
+                self.agent.save(f"Checkpoints/Car_exp_{exp}_{e}.pth")
         return ma10
 
 
