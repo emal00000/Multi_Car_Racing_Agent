@@ -173,13 +173,14 @@ class MultiCarRacing(gym.Env, EzPickle):
 
 
         # Intit for abstraction
-        self.termineted = False
+        self.reverse_index = False
+        self.terminated = False
         self.track_array = None
         self.track_poly_array = None
         self.car_info = pd.DataFrame(columns=list("1234567")) # for abstaction
         
         #fill deques with zeros
-        zero = np.zeros((17, 3)).dtype(np.float32)
+        zero = torch.zeros((17, 3),dtype=torch.float32)
         self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
         
@@ -280,8 +281,6 @@ class MultiCarRacing(gym.Env, EzPickle):
         # Find closed loop range i1..i2, first loop should be ignored, second is OK
         i1, i2 = -1, -1
         i = len(track)
-        # Create matrics for track abstaction
-        self.track_array = np.zeros((i, 3))
 
         while True:
             i -= 1
@@ -329,7 +328,8 @@ class MultiCarRacing(gym.Env, EzPickle):
 
 
         
-
+        # Create matrics for track abstaction
+        self.track_array = np.zeros((len(track), 3))
         # Create tiles
         for i in range(len(track)):
             _, beta1, x1, y1 = track[i]
@@ -379,14 +379,15 @@ class MultiCarRacing(gym.Env, EzPickle):
 
     def reset(self):
         self._destroy()
-        self.termineted = False
+        self.terminated = False
+        self.reverse_index = False
         self.reward = np.zeros(self.num_agents)
         self.prev_reward = np.zeros(self.num_agents)
         self.tile_visited_count = [0]*self.num_agents
         self.t = 0.0
         self.road_poly = []
         
-        zero = torch.zeros((17, 3)).dtype(torch.float32)
+        zero = torch.zeros((17, 3),dtype=(torch.float32))
         self.state_buffers = deque([zero,zero,zero,zero],maxlen=4) # State buffers for abstraction
 
         # Reset driving backwards/on-grass states and track direction
@@ -464,7 +465,7 @@ class MultiCarRacing(gym.Env, EzPickle):
             action = np.reshape(action, (self.num_agents, -1))
             for car_id, car in enumerate(self.cars):
                 car.steer(-action[car_id][0])
-                car.gas(action[car_id][1])
+                car.gas(min(action[car_id][1] * 1.5, 1.0))
                 car.brake(action[car_id][2])
 
         for car in self.cars:
@@ -525,7 +526,7 @@ class MultiCarRacing(gym.Env, EzPickle):
                 self.driving_on_grass[car_id] = on_grass
                 if on_grass: # Reward for driving on grass
                     done = True
-                    step_reward[car_id] += -100
+                    step_reward[car_id] += -8
                 # Find track angle of closest point
                 desired_angle = self.track[track_index][1]
 
@@ -566,14 +567,13 @@ class MultiCarRacing(gym.Env, EzPickle):
                     step_reward[car_id] += -100
 
             # Create absatraction state
-            track = self.track_array
-            
             for car_id, car in enumerate(self.cars):
                 # Get car possition
                 car_x, car_y = np.array(car.hull.position).reshape((1, 2))[0]                
                 car_angle = float(self.car_info['car_angle'][car_id])
 
-                # Extract x and y columns
+                ## Extract x and y columns
+                track = self.track_array.copy()
                 points = track[:, 1:3]
 
                 # Translate points to rectangle's center
@@ -586,41 +586,43 @@ class MultiCarRacing(gym.Env, EzPickle):
                     ])
                 
                 rotated_points = translated_points @ rotation_matrix.T # Rotate points
-                
-                # Find rows where x and y are within the window
-                font = 37
-                back = -5
-                left = -30.5
-                right = 30.5
+                track[:, 1:3] = rotated_points
 
-                x_min, x_max = left, right
-                y_min, y_max = back, font
+                track_index = int(self.car_info['closest_tile'][car_id])
 
-                # Extract x and y columns
-                x_coords = rotated_points[:, 0]
-                y_coords = rotated_points[:, 1]
+                # Get tiles infront of car
+                lookahead_range = 16
 
-                # Find rows where x and y are within the range
-                inside = (x_coords >= x_min) & (x_coords <= x_max) & \
-                            (y_coords >= y_min) & (y_coords <= y_max)
+                len_track = track.shape[0] - 1
+                if track_index == len_track:
+                    self.reverse_index = True
 
-                # Filter the array
-                track_in_window = track[inside] 
-                track_in_window[:, 1:] = track_in_window[:, 1:] - np.array((car_x, car_y))
+                if self.reverse_index:
+                    track[::-1]
+                    track_index = len_track - track_index
+
+                from_ = track_index
+                to = track_index+lookahead_range
+
+                if to > len_track: # Happens when car is on last tiles
+                    to = track_index % (len_track + 1)
+                    first_segment = track[from_:]
+                    second_segment = track[:to]
+                    track_in_range = np.concatenate((first_segment, second_segment), axis=0)
+                else:
+                    track_in_range = track[track_index:track_index+lookahead_range]
+
+                if track_index + lookahead_range > len(track):
+                    pass
 
                 # Create state
                 len_of_array = 17
                 car_state = np.zeros((len_of_array, 3), dtype=np.float32)
-                
-                if track_in_window.shape[0] > 15:
-                    track_in_window = track_in_window[:15]
 
-                car_state[:track_in_window.shape[0], :] = track_in_window
+                car_state[:track_in_range.shape[0], :] = track_in_range
 
-                # Get more car info from the code in step
                 # Get angel to closest track point
                 car_info = self.car_info
-                track_index = car_info['closest_tile'][car_id]
                 car_pos = car.hull.position
                 track_pos = self.track[int(track_index)][2:]
 
@@ -633,27 +635,21 @@ class MultiCarRacing(gym.Env, EzPickle):
                                             angel_to_track])
                 
                 
-                ab_states[car_id, :, :] = torch.tensor(car_state)
-
-
-                # Convert to dataframe
-                # track_data = pd.DataFrame(data=track_in_window[0:,0:],
-                #             index=[i for i in range(track_in_window.shape[0])],
-                #             columns=['beta1', 'track_x', 'track_y'])
-                # path = 'Documents/DeepRL'
-                # track_data.to_csv(path_or_buf= path + "/track_data.csv", sep=',', index=False, header=True)
-                # self.car_info.to_csv(path_or_buf= path + "/car_info.csv", sep=',', index=False, header=True)
+                ab_states = torch.tensor(car_state)
             
         
         if done:
-            self.termineted = True
+            self.terminated = True
 
-       
-        self.state_buffers.append(ab_states)
-        stacked_states = torch.tensor(self.state_buffers).dtype(torch.float32)
+        if len(ab_states.shape) == 3: # If state is 3D, remove first dimension
+            ab_states = ab_states.squeeze(0)
 
+        self.state_buffers.append(ab_states) # Add state to buffer
+    
+        stacked_states = torch.tensor(np.array(self.state_buffers),dtype=torch.float32) # Stack states
 
         return stacked_states, step_reward, done, {}
+    
 
     def render(self, mode='human'):
         assert mode in ['human', 'state_pixels', 'rgb_array']
