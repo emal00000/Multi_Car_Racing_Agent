@@ -174,6 +174,7 @@ class MultiCarRacing(gym.Env, EzPickle):
 
         # Intit for abstraction
         self.reverse_index = False
+        self.on_grass_counter = np.zeros(self.num_agents, dtype=int)
         self.terminated = False
         self.track_array = None
         self.track_poly_array = None
@@ -381,6 +382,7 @@ class MultiCarRacing(gym.Env, EzPickle):
         self._destroy()
         self.terminated = False
         self.reverse_index = False
+        self.on_grass_counter = np.zeros(self.num_agents, dtype=int)
         self.reward = np.zeros(self.num_agents)
         self.prev_reward = np.zeros(self.num_agents)
         self.tile_visited_count = [0]*self.num_agents
@@ -525,8 +527,15 @@ class MultiCarRacing(gym.Env, EzPickle):
                                    for polygon in self.road_poly_shapely]).any()
                 self.driving_on_grass[car_id] = on_grass
                 if on_grass: # Reward for driving on grass
-                    done = True
-                    step_reward[car_id] += -8
+                    if self.on_grass_counter[car_id] == 0:
+                        step_reward[car_id] += -4
+                    else:
+                        step_reward[car_id] += -.5
+                    self.on_grass_counter[car_id] += 1
+                    if self.on_grass_counter[car_id] > 20: # Nr of time steps car is allowed on grass
+                        done = True
+                else:
+                    self.on_grass_counter[car_id] = 0
                 # Find track angle of closest point
                 desired_angle = self.track[track_index][1]
 
@@ -589,7 +598,6 @@ class MultiCarRacing(gym.Env, EzPickle):
                 track[:, 1:3] = rotated_points
 
                 track_index = int(self.car_info['closest_tile'][car_id])
-
                 # Get tiles infront of car
                 lookahead_range = 16
 
@@ -599,13 +607,14 @@ class MultiCarRacing(gym.Env, EzPickle):
 
                 if self.reverse_index:
                     track[::-1]
+                    
                     track_index = len_track - track_index
+
 
                 from_ = track_index
                 to = track_index+lookahead_range
-
                 if to > len_track: # Happens when car is on last tiles
-                    to = track_index % (len_track + 1)
+                    to = to % (len_track + 1)
                     first_segment = track[from_:]
                     second_segment = track[:to]
                     track_in_range = np.concatenate((first_segment, second_segment), axis=0)

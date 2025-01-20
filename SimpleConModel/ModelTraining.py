@@ -10,13 +10,13 @@ env = gym.make("MultiCarRacing-v0", verbose=0, num_agents=1, direction='CCW',
                 )
 start = time.time()
 SAC_exp = traning_loop(env, 
-                        num_episodes=2000,
-                        num_experiments=1,
+                        num_episodes=4000,
+                        num_experiments=2,
                         min_alpha=0.1,
                         tau=0.1**(1/100),
                         render_mode=None,
-                        max_steps = 2000,
-                        load_pretrained="Car_exp:1_ep:20.pth"
+                        max_steps = 1200,
+                        # load_pretrained="Car_exp:0_ep:4000.pth"
                         )
 SAC_exp.start_exp_loop()
 t = time.strftime("%H:%M:%S", time.gmtime(time.time() - start))

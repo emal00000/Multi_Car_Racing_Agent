@@ -29,7 +29,7 @@ class state_encoder(nn.Module):
         self.encoder = nn.Sequential(
                 nn.Conv2d(4, 8, kernel_size=2, stride=1, padding=1),
                 nn.ReLU(),
-                nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=0),
+                nn.Conv2d(8, 8, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Conv2d(8, 4, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
@@ -78,11 +78,11 @@ class Qfunction(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.dense_net = nn.Sequential(  
-                nn.Linear(62, 32),
+                nn.Linear(130, 128),
                 nn.ReLU(),
-                nn.Linear(32, 32),
+                nn.Linear(128, 128),
                 nn.ReLU(),
-                nn.Linear(32, 1),
+                nn.Linear(128, 1),
         )
 
     def forward(self, states, actions):
@@ -97,14 +97,14 @@ class GaussianPolicy(nn.Module):
     def __init__(self, encoder):
         super().__init__()
         self.encoder = encoder
-        self.fc = nn.Linear(60, 32)
+        self.fc = nn.Linear(128, 128)
         self.mu = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Linear(128, 2)
         )
         self.std = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Linear(128, 2)
         )
 
     def forward(self, states):
@@ -287,22 +287,27 @@ class ConAgent(nn.Module):
 
 
 
-def gas_brake_map(action):
+def gas_brake_map(action, ep):
     # maping negative gas to brake
     action = action.squeeze(0)
-    bias = 0.65
-    if action[1] < 1 - bias:
-        action[1] += bias
 
+    # gas bias
+    if ep < 500: gas_bias = 0.1
+    else: gas_bias = 0
+
+    if action[1] < 1 - gas_bias: action[1] += gas_bias # adding the bias
+    
+    # thresholds
+    if np.abs(action[0]) <= 0.1 : action[0] = 0 # steering threshold
+    if np.abs(action[1]) <= 0.1 : action[1] = 0 # gas/brake threshold
+
+
+    # gas brake mapping
     a = torch.cat([action, -action[1].unsqueeze(0)])
     if action[1] > 0:
         a[2] = 0
     else:
         a[1] = 0
-
-    # mininum stering craiterion
-    if abs(a[0]) < 0.1:
-        a[0] = 0
     return a.numpy()
 
 
@@ -351,21 +356,19 @@ class traning_loop():
         dfs = []
         self.high_score = -1e3
         self.high_score_txt = ""
-        try:
-            for exp in range(self.num_experiments):
-                self.agent = ConAgent()
-                try:
-                    if self.load_pretrained:
-                        self.agent.load(self.load_pretrained)
-                    ma10 = self.episode_loop(exp)
-                    dfs.append(
-                        pd.DataFrame(
-                            {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
-                        )
+        for exp in range(self.num_experiments):
+            self.agent = ConAgent()
+            try:
+                if self.load_pretrained:
+                    self.agent.load(self.load_pretrained)
+                ma10 = self.episode_loop(exp)
+                dfs.append(
+                    pd.DataFrame(
+                        {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
                     )
-                finally:
-                    self.agent.save(f"Car_exp:{exp}_ep:{self.num_episodes}.pt")
-        finally:
+                )
+            finally:
+                self.agent.save(f"Car_exp:{exp}_ep:{self.num_episodes}.pth")
             df = pd.concat(dfs, ignore_index=True)
             script_dir = os.path.dirname(os.path.abspath(__file__))
             df.to_csv(path_or_buf=os.path.join(script_dir, f"ma10_result_exp{exp}.csv"), sep=',', index=False, header=True)
@@ -377,25 +380,25 @@ class traning_loop():
         scores = deque([], maxlen=10)
         ma10 = np.zeros(self.num_episodes)
         for e in range(1, self.num_episodes + 1):
-            score, step = self.step_loop()
+            score, step = self.step_loop(e)
             self.display(exp, e, score, step)
             self.agent.alpha = max(self.min_alpha, self.agent.alpha * self.tau)
             scores.append(score)
             ma10[e-1] += np.mean(scores)
-            if e % 50 == 0:
+            if e % 500 == 0:
                 print("Checkpoint saved at episode: ", e, "\n")
                 self.agent.save(f"Checkpoints/Car_exp_{exp}_{e}.pth")
         return ma10
 
 
-    def step_loop(self):
+    def step_loop(self, ep):
         state = self.env.reset()
         terminated = False
         score = 0
         step = 0
         while not (terminated):
             action = self.agent.sample_action(state)
-            next_state, reward, _, _ = self.env.step(gas_brake_map(action))
+            next_state, reward, _, _ = self.env.step(gas_brake_map(action, ep))
             terminated = self.env.terminated
             self.agent.store(state, action, reward, next_state, terminated)
             self.agent.learn()
