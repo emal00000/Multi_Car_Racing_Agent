@@ -1,0 +1,1 @@
+Compared to model 5, this model has the same environment and same structure, except that it runs a convolution separately on the car information and then concatenates the two convolutions back into one single vector.
