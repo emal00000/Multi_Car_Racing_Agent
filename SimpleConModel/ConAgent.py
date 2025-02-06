@@ -34,14 +34,24 @@ class state_encoder(nn.Module):
                 nn.Conv2d(8, 4, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Flatten(),
-                )    
+                )
+        self.car_encoder = nn.Sequential(
+                nn.Conv2d(1, 4, kernel_size=2, stride=1, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(4, 4, kernel_size=2, stride=1, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(4, 1, kernel_size=2, stride=1, padding=0),
+                nn.ReLU(),
+                nn.Flatten(),
+        )  
 
 
     def forward(self, state):
         if len(state.shape) == 3:
             state = state.unsqueeze(0)
-        x = self.encoder(state) # encoding track info
-        return x
+        x_track = self.encoder(state[:, :, :-1, :]) # encoding track info
+        x_car = self.car_encoder(state[:, :, -1, :].unsqueeze(1))
+        return torch.cat((x_track, x_car), dim=1)
 
 
 
@@ -78,7 +88,7 @@ class Qfunction(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.dense_net = nn.Sequential(  
-                nn.Linear(130, 128),
+                nn.Linear(142, 128),
                 nn.ReLU(),
                 nn.Linear(128, 128),
                 nn.ReLU(),
@@ -97,7 +107,11 @@ class GaussianPolicy(nn.Module):
     def __init__(self, encoder):
         super().__init__()
         self.encoder = encoder
-        self.fc = nn.Linear(128, 128)
+        self.fc = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(140, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128))
         self.mu = nn.Sequential(
             nn.ReLU(),
             nn.Linear(128, 2)
@@ -287,22 +301,17 @@ class ConAgent(nn.Module):
 
 
 
-def gas_brake_map(action, ep):
+def gas_brake_map(action):
     # maping negative gas to brake
     action = action.squeeze(0)
+    gas_bias = .65
+    if action[1] < 1 - gas_bias:
+        action[1] += gas_bias
 
-    # gas bias
-    if ep < 500: gas_bias = 0.1
-    else: gas_bias = 0
+    # mininum stering/gas craiterion
+    if abs(action[0]) < 0.1: action[0] = 0
+    if abs(action[1]) < 0.1: action[1] = 0
 
-    if action[1] < 1 - gas_bias: action[1] += gas_bias # adding the bias
-    
-    # thresholds
-    if np.abs(action[0]) <= 0.1 : action[0] = 0 # steering threshold
-    if np.abs(action[1]) <= 0.1 : action[1] = 0 # gas/brake threshold
-
-
-    # gas brake mapping
     a = torch.cat([action, -action[1].unsqueeze(0)])
     if action[1] > 0:
         a[2] = 0
@@ -360,6 +369,7 @@ class traning_loop():
             self.agent = ConAgent()
             try:
                 if self.load_pretrained:
+                    print(f"Loading pretrained model: {self.load_pretrained}")
                     self.agent.load(self.load_pretrained)
                 ma10 = self.episode_loop(exp)
                 dfs.append(
@@ -380,25 +390,30 @@ class traning_loop():
         scores = deque([], maxlen=10)
         ma10 = np.zeros(self.num_episodes)
         for e in range(1, self.num_episodes + 1):
-            score, step = self.step_loop(e)
+            score, step = self.step_loop()
             self.display(exp, e, score, step)
             self.agent.alpha = max(self.min_alpha, self.agent.alpha * self.tau)
             scores.append(score)
             ma10[e-1] += np.mean(scores)
             if e % 500 == 0:
-                print("Checkpoint saved at episode: ", e, "\n")
+                if not os.path.exists("Checkpoints"):
+                    os.makedirs("Checkpoints")
+                    print(f"Folder created: Checkpoints")
+                
+                # save agent state
                 self.agent.save(f"Checkpoints/Car_exp_{exp}_{e}.pth")
+                print("Checkpoint saved at episode: ", e, "\n")
         return ma10
 
 
-    def step_loop(self, ep):
+    def step_loop(self):
         state = self.env.reset()
         terminated = False
         score = 0
         step = 0
         while not (terminated):
             action = self.agent.sample_action(state)
-            next_state, reward, _, _ = self.env.step(gas_brake_map(action, ep))
+            next_state, reward, _, _ = self.env.step(gas_brake_map(action))
             terminated = self.env.terminated
             self.agent.store(state, action, reward, next_state, terminated)
             self.agent.learn()
