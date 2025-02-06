@@ -29,19 +29,29 @@ class state_encoder(nn.Module):
         self.encoder = nn.Sequential(
                 nn.Conv2d(4, 8, kernel_size=2, stride=1, padding=1),
                 nn.ReLU(),
-                nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=0),
+                nn.Conv2d(8, 8, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Conv2d(8, 4, kernel_size=2, stride=1, padding=0),
                 nn.ReLU(),
                 nn.Flatten(),
-                )    
+                )
+        self.car_encoder = nn.Sequential(
+                nn.Conv2d(1, 4, kernel_size=2, stride=1, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(4, 4, kernel_size=2, stride=1, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(4, 1, kernel_size=2, stride=1, padding=0),
+                nn.ReLU(),
+                nn.Flatten(),
+        )  
 
 
     def forward(self, state):
         if len(state.shape) == 3:
             state = state.unsqueeze(0)
-        x = self.encoder(state) # encoding track info
-        return x
+        x_track = self.encoder(state[:, :, :-1, :]) # encoding track info
+        x_car = self.car_encoder(state[:, :, -1, :].unsqueeze(1))
+        return torch.cat((x_track, x_car), dim=1)
 
 
 
@@ -78,11 +88,11 @@ class Qfunction(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.dense_net = nn.Sequential(  
-                nn.Linear(62, 32),
+                nn.Linear(142, 128),
                 nn.ReLU(),
-                nn.Linear(32, 32),
+                nn.Linear(128, 128),
                 nn.ReLU(),
-                nn.Linear(32, 1),
+                nn.Linear(128, 1),
         )
 
     def forward(self, states, actions):
@@ -97,14 +107,18 @@ class GaussianPolicy(nn.Module):
     def __init__(self, encoder):
         super().__init__()
         self.encoder = encoder
-        self.fc = nn.Linear(60, 32)
+        self.fc = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(140, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128))
         self.mu = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Linear(128, 2)
         )
         self.std = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Linear(128, 2)
         )
 
     def forward(self, states):
@@ -290,19 +304,19 @@ class ConAgent(nn.Module):
 def gas_brake_map(action):
     # maping negative gas to brake
     action = action.squeeze(0)
-    bias = 0.65
-    if action[1] < 1 - bias:
-        action[1] += bias
+    gas_bias = .65
+    if action[1] < 1 - gas_bias:
+        action[1] += gas_bias
+
+    # mininum stering/gas craiterion
+    if abs(action[0]) < 0.1: action[0] = 0
+    if abs(action[1]) < 0.1: action[1] = 0
 
     a = torch.cat([action, -action[1].unsqueeze(0)])
     if action[1] > 0:
         a[2] = 0
     else:
         a[1] = 0
-
-    # mininum stering craiterion
-    if abs(a[0]) < 0.1:
-        a[0] = 0
     return a.numpy()
 
 
@@ -351,21 +365,20 @@ class traning_loop():
         dfs = []
         self.high_score = -1e3
         self.high_score_txt = ""
-        try:
-            for exp in range(self.num_experiments):
-                self.agent = ConAgent()
-                try:
-                    if self.load_pretrained:
-                        self.agent.load(self.load_pretrained)
-                    ma10 = self.episode_loop(exp)
-                    dfs.append(
-                        pd.DataFrame(
-                            {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
-                        )
+        for exp in range(self.num_experiments):
+            self.agent = ConAgent()
+            try:
+                if self.load_pretrained:
+                    print(f"Loading pretrained model: {self.load_pretrained}")
+                    self.agent.load(self.load_pretrained)
+                ma10 = self.episode_loop(exp)
+                dfs.append(
+                    pd.DataFrame(
+                        {"exp": exp, "episode": np.arange(self.num_episodes), "MA10": ma10}
                     )
-                finally:
-                    self.agent.save(f"Car_exp:{exp}_ep:{self.num_episodes}.pt")
-        finally:
+                )
+            finally:
+                self.agent.save(f"Car_exp:{exp}_ep:{self.num_episodes}.pth")
             df = pd.concat(dfs, ignore_index=True)
             script_dir = os.path.dirname(os.path.abspath(__file__))
             df.to_csv(path_or_buf=os.path.join(script_dir, f"ma10_result_exp{exp}.csv"), sep=',', index=False, header=True)
@@ -382,9 +395,14 @@ class traning_loop():
             self.agent.alpha = max(self.min_alpha, self.agent.alpha * self.tau)
             scores.append(score)
             ma10[e-1] += np.mean(scores)
-            if e % 50 == 0:
-                print("Checkpoint saved at episode: ", e, "\n")
+            if e % 500 == 0:
+                if not os.path.exists("Checkpoints"):
+                    os.makedirs("Checkpoints")
+                    print(f"Folder created: Checkpoints")
+                
+                # save agent state
                 self.agent.save(f"Checkpoints/Car_exp_{exp}_{e}.pth")
+                print("Checkpoint saved at episode: ", e, "\n")
         return ma10
 
 
