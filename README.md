@@ -4,7 +4,7 @@ In this project, we explore the development and evaluation of the behaviors in m
 ## Environment Setup
 1. Follow the installation instructions provided in the "multi_car_racing" repository linked below:
   - [Multi Car Racing](https://github.com/Sedwall/multi_car_racing)
-2. Update line 17 in requirements.txt to point to the multi_car_racing directory cloned in the previous step.
+2. Update line 17 in `requirements.txt` to point to the `multi_car_racing` directory cloned in the previous step.
 3. Run the installation with the following command:
   ```bash
   pip install -r requirements.txt
