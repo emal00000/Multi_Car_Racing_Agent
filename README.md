@@ -23,4 +23,4 @@ When attempting to run the model, you may encounter the following error: ```Type
         with
         `w.ApplyForceToCenter( (
                 float(p_force*side[0] + f_force*forw[0]),
-                float(p_force*side[1] + f_force*forw[1]), True ))`
+                float(p_force*side[1] + f_force*forw[1])), True )`
