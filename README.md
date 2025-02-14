@@ -9,5 +9,18 @@ In this project, we explore the development and evaluation of the behaviors in m
   ```bash
   pip install -r requirements.txt
   ```
-
-
+###Resolving Box2D Compatibility Issue:
+When attempting to run the model, you may encounter the following error: ```TypeError: in method 'b2RevoluteJoint___SetMotorSpeed', argument 2 of type 'float32'```
+  To fix this, apply the following changes:
+  1. In `box2d/car_dynamics.py`, line 145, replace:
+     `w.joint.motorSpeed = dir*min(50.0*val, 3.0)`
+     with
+     `w.joint.motorSpeed = float(dir*min(50.0*val, 3.0))`
+  3. In `box2d/car_dynamics.py`, line 213-215: replase:
+        `w.ApplyForceToCenter( (
+                p_force*side[0] + f_force*forw[0],
+                p_force*side[1] + f_force*forw[1]), True )`
+        with
+        `w.ApplyForceToCenter( (
+                float(p_force*side[0] + f_force*forw[0]),
+                float(p_force*side[1] + f_force*forw[1]), True ))`
